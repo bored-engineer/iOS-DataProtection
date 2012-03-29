@@ -4,6 +4,7 @@ import plistlib
 import zipfile
 import struct
 import sys
+import os
 from optparse import OptionParser
 from Crypto.Cipher import AES
 from util.lzss import decompress_lzss
@@ -79,25 +80,34 @@ def decryptImg3(blob, key, iv):
 
 
 def main(ipswname, options):
+    print "Finding ipsw..."
     ipsw = zipfile.ZipFile(ipswname)
+    print "Finding kernel..."
     manifest = plistlib.readPlistFromString(ipsw.read("BuildManifest.plist"))
     kernelname = manifest["BuildIdentities"][0]["Manifest"]["KernelCache"]["Info"]["Path"]
     kernel = ipsw.read(kernelname)
+    print "Finding ipsw keys..."
     keys = IPSWkeys(manifest)
     
     key,iv = keys.getKeyIV(kernelname)
     
     if key == None:
-        print "No keys found for kernel"
+        print "No keys found for kernel!"
         return
+    else:
+    	print "Found ipsw key!"
     
-    print "Decrypting %s" % kernelname
+    print "Decrypting kernel \"%s\"" % kernelname
     kernel = decryptImg3(kernel, key.decode("hex"), iv.decode("hex"))
     assert kernel.startswith("complzss"), "Decrypted kernelcache does not start with \"complzss\" => bad key/iv ?"
     
-    print "Unpacking ..."
+    print "Decrypted successfully!"
+    
+    print "Unpacking kernel..."
     kernel = decompress_lzss(kernel)
     assert kernel.startswith("\xCE\xFA\xED\xFE"), "Decompressed kernelcache does not start with 0xFEEDFACE"
+    
+    print "Unpacked successfully!"
     
     patchs = patchs_ios5
     if manifest["ProductVersion"].startswith("4."):
@@ -106,14 +116,14 @@ def main(ipswname, options):
     
     if options.fixnand:
         if patchs != patchs_ios4:
-            print "FAIL : use --fixnand with iOS 4.x IPSW"
+            print "FAILED: use --fixnand with iOS 4.x IPSW"
             return
         patchs.update(patchs_ios4_fixnand)
         kernelname = "fix_nand_" + kernelname
-        print "WARNING : only use this kernel to fix NAND epoch brick"
+        print "WARNING: only use this kernel to fix NAND epoch brick"
     
     for p in patchs:
-        print "Doing %s patch" % p
+        print "Applying %s patch..." % p
         s, r = patchs[p]
         c = kernel.count(s)
         if c != 1:
@@ -121,12 +131,17 @@ def main(ipswname, options):
         else:
             kernel = kernel.replace(s,r)
     
+    print "Patched kernel successfully!";
     outkernel = "%s.patched" % kernelname
+    print "Saving patched kernel"
     open(outkernel, "wb").write(kernel)
-    print "Patched kernel written to %s" % outkernel
+    print "Patched kernel saved to %s" % outkernel
     
+    print "Finding ramdisk..."
     ramdiskname = manifest["BuildIdentities"][0]["Manifest"]["RestoreRamDisk"]["Info"]["Path"]
     key,iv = keys.getKeyIV("Ramdisk")
+    
+    print "Finalizing..."
     
     build_cmd = "./build_ramdisk.sh %s %s %s %s" % (ipswname, ramdiskname, key, iv)
     rs_cmd = "redsn0w -i %s -r myramdisk.dmg -k %s" % (ipswname, outkernel)
@@ -149,17 +164,23 @@ SDKVER=$SDKVER make -C ramdisk_tools
 
 %s
 
-echo "You can boot the ramdisk using the following command (fix paths)"
+echo "You can boot the ramdisk using the following command:"
 echo "%s"
 """ % (build_cmd, rs_cmd)
     
     devclass = manifest["BuildIdentities"][0]["Info"]["DeviceClass"]
-    scriptname="make_ramdisk_%s.sh" % devclass
+    print "Saving ramdisk build script..."
+    scriptname="build_ramdisk_%s.sh" % devclass
     f=open(scriptname, "wb")
     f.write(rdisk_script)
     f.close()
+    print "Saved successfully!"
     
-    print "Created script %s, you can use it to (re)build the ramdisk"% scriptname
+    print "Making build script executable..."
+    os.chmod(scriptname, 0777)
+    print "Build script chmod successful!"
+    
+    print "Run the script %s to (re)build the ramdisk."% scriptname
     
 
 if __name__ == "__main__":
